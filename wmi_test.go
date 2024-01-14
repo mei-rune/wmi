@@ -21,7 +21,7 @@ import (
 func TestQuery(t *testing.T) {
 	var dst []Win32_Process
 	q := CreateQuery(&dst, "")
-	err := Query(q, &dst)
+	err := Query(q, MustSliceValuer(&dst))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestFieldMismatch(t *testing.T) {
 		Blah        uint32
 	}
 	var dst []s
-	err := Query("SELECT Name, HandleCount FROM Win32_Process", &dst)
+	err := Query("SELECT Name, HandleCount FROM Win32_Process", MustSliceValuer(&dst))
 	if err == nil || err.Error() != `wmi: cannot load field "Blah" into a "uint32": no such struct field` {
 		t.Error("Expected err field mismatch")
 	}
@@ -52,7 +52,7 @@ func TestMissingFields(t *testing.T) {
 	client := &Client{
 		AllowMissingFields: true,
 	}
-	err := client.Query("SELECT Name FROM Win32_Process", &dst)
+	err := client.Query("SELECT Name FROM Win32_Process", client.MustSliceValuer(&dst))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestMissingFields(t *testing.T) {
 		AllowMissingFields: true,
 	}
 	dst = []s{}
-	err = client.Query("SELECT Name FROM Win32_Process", &dst)
+	err = client.Query("SELECT Name FROM Win32_Process", client.MustSliceValuer(&dst))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,21 +96,26 @@ func TestNullPointerField(t *testing.T) {
 	var dst []s
 
 	client := &Client{}
-	err := client.Query("SELECT Name, Status FROM Win32_Process WHERE Status IS NULL", &dst)
+	err := client.Query("SELECT Name, Status FROM Win32_Process WHERE Status IS NULL", client.MustSliceValuer(&dst))
 	if err != nil {
 		t.Fatal(err)
 	}
+	hasNoNil := false
 	for i := range dst {
 		if dst[i].Status == nil {
-			t.Fatal("Expected Status field to not be nil")
+		} else {
+			hasNoNil = true
 		}
+	}
+	if !hasNoNil {
+			t.Fatal("Expected Status field to not be nil")
 	}
 
 	client = &Client{
 		PtrNil: true,
 	}
 	dst = []s{}
-	err = client.Query("SELECT Name, Status FROM Win32_Process WHERE Status IS NULL", &dst)
+	err = client.Query("SELECT Name, Status FROM Win32_Process WHERE Status IS NULL", client.MustSliceValuer(&dst))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +133,7 @@ func TestStrings(t *testing.T) {
 		zeros := 0
 		q := CreateQuery(&dst, "")
 		for i := 0; i < 5; i++ {
-			err := Query(q, &dst)
+			err := Query(q, MustSliceValuer(&dst))
 			if err != nil {
 				t.Fatal(err, q)
 			}
@@ -168,12 +173,12 @@ func TestStrings(t *testing.T) {
 func TestNamespace(t *testing.T) {
 	var dst []Win32_Process
 	q := CreateQuery(&dst, "")
-	err := QueryNamespace(q, &dst, `root\CIMV2`)
+	err := QueryNamespace(q, MustSliceValuer(&dst), `root\CIMV2`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dst = nil
-	err = QueryNamespace(q, &dst, `broken\nothing`)
+	err = QueryNamespace(q, MustSliceValuer(&dst), `broken\nothing`)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -241,7 +246,7 @@ func _TestMemoryWMIConcurrent(t *testing.T) {
 			}
 			var dst []Win32_PerfRawData_PerfDisk_LogicalDisk
 			q := CreateQuery(&dst, "")
-			err := Query(q, &dst)
+			err := Query(q, MustSliceValuer(&dst))
 			if err != nil {
 				fmt.Println("ERROR disk", err)
 			}
@@ -255,7 +260,7 @@ func _TestMemoryWMIConcurrent(t *testing.T) {
 			//}
 			var dst []Win32_OperatingSystem
 			q := CreateQuery(&dst, "")
-			err := Query(q, &dst)
+			err := Query(q, MustSliceValuer(&dst))
 			if err != nil {
 				fmt.Println("ERROR OS", err)
 			}
@@ -451,7 +456,7 @@ var (
 func GetMemoryUsageMB() (float64, float64, float64) {
 	runtime.ReadMemStats(&mMemoryUsageMB)
 	//errGetMemoryUsageMB = nil //Query(qGetMemoryUsageMB, &dstGetMemoryUsageMB) float64(dstGetMemoryUsageMB[0].WorkingSetPrivate)
-	errGetMemoryUsageMB = Query(qGetMemoryUsageMB, &dstGetMemoryUsageMB)
+	errGetMemoryUsageMB = Query(qGetMemoryUsageMB, MustSliceValuer(&dstGetMemoryUsageMB))
 	if errGetMemoryUsageMB != nil {
 		fmt.Println("ERROR GetMemoryUsage", errGetMemoryUsageMB)
 		return 0, 0, 0

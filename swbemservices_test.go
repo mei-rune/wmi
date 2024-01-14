@@ -18,7 +18,7 @@ func TestWbemQuery(t *testing.T) {
 
 	var dst []Win32_Process
 	q := CreateQuery(&dst, "WHERE name='lsass.exe'")
-	errQuery := s.Query(q, &dst)
+	errQuery := s.Query(q, s.MustSliceValuer(&dst))
 	if errQuery != nil {
 		t.Fatalf("Query1: %s", errQuery)
 	}
@@ -29,7 +29,7 @@ func TestWbemQuery(t *testing.T) {
 	//fmt.Printf("dst[0].ProcessID=%d\n", dst[0].ProcessId)
 
 	q2 := CreateQuery(&dst, "WHERE name='svchost.exe'")
-	errQuery = s.Query(q2, &dst)
+	errQuery = s.Query(q2, s.MustSliceValuer(&dst))
 	if errQuery != nil {
 		t.Fatalf("Query2: %s", errQuery)
 	}
@@ -53,7 +53,7 @@ func TestWbemQueryNamespace(t *testing.T) {
 	}
 	var dst []MSFT_NetAdapter
 	q := CreateQuery(&dst, "")
-	errQuery := s.Query(q, &dst, nil, "root\\StandardCimv2")
+	errQuery := s.Query(q, s.MustSliceValuer(&dst), nil, "root\\StandardCimv2")
 	if errQuery != nil {
 		t.Fatalf("Query: %s", errQuery)
 	}
@@ -69,6 +69,9 @@ func TestWbemQueryNamespace(t *testing.T) {
 
 // Run using: go test -run TestWbemMemory -timeout 60m
 func TestWbemMemory(t *testing.T) {
+	if testing.Short() {
+		return
+	}
 	s, err := InitializeSWbemServices(DefaultClient)
 	if err != nil {
 		t.Fatalf("InitializeSWbemServices: %s", err)
@@ -93,7 +96,7 @@ func TestWbemMemory(t *testing.T) {
 
 func WbemGetMemoryUsageMB(s *SWbemServices) (float64, float64, float64) {
 	runtime.ReadMemStats(&mMemoryUsageMB)
-	errGetMemoryUsageMB = s.Query(qGetMemoryUsageMB, &dstGetMemoryUsageMB)
+	errGetMemoryUsageMB = s.Query(qGetMemoryUsageMB, s.MustSliceValuer(&dstGetMemoryUsageMB))
 	if errGetMemoryUsageMB != nil {
 		fmt.Println("ERROR GetMemoryUsage", errGetMemoryUsageMB)
 		return 0, 0, 0
@@ -114,7 +117,7 @@ func BenchmarkNewVersion(b *testing.B) {
 	var dst []Win32_OperatingSystem
 	q := CreateQuery(&dst, "")
 	for n := 0; n < b.N; n++ {
-		errQuery := s.Query(q, &dst)
+		errQuery := s.Query(q, s.MustSliceValuer(&dst))
 		if errQuery != nil {
 			b.Fatalf("Query%d: %s", n, errQuery)
 		}
@@ -134,7 +137,7 @@ func BenchmarkOldVersion(b *testing.B) {
 	var dst []Win32_OperatingSystem
 	q := CreateQuery(&dst, "")
 	for n := 0; n < b.N; n++ {
-		errQuery := Query(q, &dst)
+		errQuery := Query(q, MustSliceValuer(&dst))
 		if errQuery != nil {
 			b.Fatalf("Query%d: %s", n, errQuery)
 		}

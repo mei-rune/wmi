@@ -32,7 +32,6 @@ import (
 	"os"
 	"reflect"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,7 +54,7 @@ var (
 const S_FALSE = 0x00000001
 
 // QueryNamespace invokes Query with the given namespace on the local machine.
-func QueryNamespace(query string, dst interface{}, namespace string) error {
+func QueryNamespace(query string, dst SliceValuer, namespace string) error {
 	return Query(query, dst, nil, namespace)
 }
 
@@ -72,7 +71,7 @@ func QueryNamespace(query string, dst interface{}, namespace string) error {
 // for details.
 //
 // Query is a wrapper around DefaultClient.Query.
-func Query(query string, dst interface{}, connectServerArgs ...interface{}) error {
+func Query(query string, dst SliceValuer, connectServerArgs ...interface{}) error {
 	if DefaultClient.SWbemServicesClient == nil {
 		return DefaultClient.Query(query, dst, connectServerArgs...)
 	}
@@ -120,6 +119,14 @@ type Client struct {
 
 // DefaultClient is the default Client and is used by Query, QueryNamespace, and CallMethod.
 var DefaultClient = &Client{}
+
+func (c *Client) MustSliceValuer(dst interface{}) SliceValuer {
+	sv := MustSliceValuer(dst)
+	sv.AllowMissingFields = c.AllowMissingFields
+	sv.NonePtrZero = c.NonePtrZero
+	sv.PtrNil = c.PtrNil
+	return sv
+}
 
 // coinitService coinitializes WMI service. If no error is returned, a cleanup function
 // is returned which must be executed (usually deferred) to clean up allocated resources.
@@ -226,16 +233,16 @@ func (c *Client) CallMethod(connectServerArgs []interface{}, className, methodNa
 // changed using connectServerArgs. See
 // https://docs.microsoft.com/en-us/windows/desktop/WmiSdk/swbemlocator-connectserver
 // for details.
-func (c *Client) Query(query string, dst interface{}, connectServerArgs ...interface{}) error {
-	dv := reflect.ValueOf(dst)
-	if dv.Kind() != reflect.Ptr || dv.IsNil() {
-		return ErrInvalidEntityType
-	}
-	dv = dv.Elem()
-	mat, elemType := checkMultiArg(dv)
-	if mat == multiArgTypeInvalid {
-		return ErrInvalidEntityType
-	}
+func (c *Client) Query(query string, dv SliceValuer, connectServerArgs ...interface{}) error {
+	// dv := reflect.ValueOf(dst)
+	// if dv.Kind() != reflect.Ptr || dv.IsNil() {
+	// 	return ErrInvalidEntityType
+	// }
+	// dv = dv.Elem()
+	// mat, elemType := checkMultiArg(dv)
+	// if mat == multiArgTypeInvalid {
+	// 	return ErrInvalidEntityType
+	// }
 
 	lock.Lock()
 	defer lock.Unlock()
@@ -277,7 +284,8 @@ func (c *Client) Query(query string, dst interface{}, connectServerArgs ...inter
 	defer enum.Release()
 
 	// Initialize a slice with Count capacity
-	dv.Set(reflect.MakeSlice(dv.Type(), 0, int(count)))
+	// dv.Set(reflect.MakeSlice(dv.Type(), 0, int(count)))
+	dv.Grow(int(count))
 
 	var errFieldMismatch error
 	for itemRaw, length, err := enum.Next(1); length > 0; itemRaw, length, err = enum.Next(1) {
@@ -290,8 +298,7 @@ func (c *Client) Query(query string, dst interface{}, connectServerArgs ...inter
 			item := itemRaw.ToIDispatch()
 			defer item.Release()
 
-			ev := reflect.New(elemType)
-			if err = c.loadEntity(ev.Interface(), item); err != nil {
+			if err = dv.LoadEntity(item); err != nil {
 				if _, ok := err.(*ErrFieldMismatch); ok {
 					// We continue loading entities even in the face of field mismatch errors.
 					// If we encounter any other error, that other error is returned. Otherwise,
@@ -301,10 +308,6 @@ func (c *Client) Query(query string, dst interface{}, connectServerArgs ...inter
 					return err
 				}
 			}
-			if mat != multiArgTypeStructPtr {
-				ev = ev.Elem()
-			}
-			dv.Set(reflect.Append(dv, ev))
 			return nil
 		}()
 		if err != nil {
@@ -331,192 +334,203 @@ func (e *ErrFieldMismatch) Error() string {
 
 var timeType = reflect.TypeOf(time.Time{})
 
-// loadEntity loads a SWbemObject into a struct pointer.
-func (c *Client) loadEntity(dst interface{}, src *ole.IDispatch) (errFieldMismatch error) {
-	v := reflect.ValueOf(dst).Elem()
-	for i := 0; i < v.NumField(); i++ {
-		f := v.Field(i)
-		of := f
-		isPtr := f.Kind() == reflect.Ptr
-		n := v.Type().Field(i).Name
-		if n[0] < 'A' || n[0] > 'Z' {
-			continue
-		}
-		if !f.CanSet() {
-			return &ErrFieldMismatch{
-				StructType: of.Type(),
-				FieldName:  n,
-				Reason:     "CanSet() is false",
-			}
-		}
-		prop, err := oleutil.GetProperty(src, n)
-		if err != nil {
-			if !c.AllowMissingFields {
-				errFieldMismatch = &ErrFieldMismatch{
-					StructType: of.Type(),
-					FieldName:  n,
-					Reason:     "no such struct field",
-				}
-			}
-			continue
-		}
-		defer prop.Clear()
+// // loadEntity loads a SWbemObject into a struct pointer.
+// func (c *Client) loadEntity(dst interface{}, src *ole.IDispatch) (errFieldMismatch error) {
+// 	v := reflect.ValueOf(dst).Elem()
+// 	for i := 0; i < v.NumField(); i++ {
+// 		f := v.Field(i)
+// 		of := f
+// 		isPtr := f.Kind() == reflect.Ptr
+// 		n := v.Type().Field(i).Name
+// 		if n[0] < 'A' || n[0] > 'Z' {
+// 			continue
+// 		}
+// 		if !f.CanSet() {
+// 			return &ErrFieldMismatch{
+// 				StructType: of.Type(),
+// 				FieldName:  n,
+// 				Reason:     "CanSet() is false",
+// 			}
+// 		}
+// 		prop, err := oleutil.GetProperty(src, n)
+// 		if err != nil {
+// 			if !c.AllowMissingFields {
+// 				errFieldMismatch = &ErrFieldMismatch{
+// 					StructType: of.Type(),
+// 					FieldName:  n,
+// 					Reason:     "no such struct field",
+// 				}
+// 			}
+// 			continue
+// 		}
+// 		defer prop.Clear()
 
-		if isPtr && !(c.PtrNil && prop.VT == 0x1) {
-			ptr := reflect.New(f.Type().Elem())
-			f.Set(ptr)
-			f = f.Elem()
-		}
+// 		if isPtr && !(c.PtrNil && prop.VT == 0x1) {
+// 			ptr := reflect.New(f.Type().Elem())
+// 			f.Set(ptr)
+// 			f = f.Elem()
+// 		}
 
-		if prop.VT == 0x1 { //VT_NULL
-			continue
-		}
+// 		if prop.VT == 0x1 { //VT_NULL
+// 			continue
+// 		}
 
-		switch val := prop.Value().(type) {
-		case int8, int16, int32, int64, int:
-			v := reflect.ValueOf(val).Int()
-			switch f.Kind() {
-			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				f.SetInt(v)
-			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-				f.SetUint(uint64(v))
-			default:
-				return &ErrFieldMismatch{
-					StructType: of.Type(),
-					FieldName:  n,
-					Reason:     "not an integer class",
-				}
-			}
-		case uint8, uint16, uint32, uint64:
-			v := reflect.ValueOf(val).Uint()
-			switch f.Kind() {
-			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				f.SetInt(int64(v))
-			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-				f.SetUint(v)
-			default:
-				return &ErrFieldMismatch{
-					StructType: of.Type(),
-					FieldName:  n,
-					Reason:     "not an integer class",
-				}
-			}
-		case string:
-			switch f.Kind() {
-			case reflect.String:
-				f.SetString(val)
-			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				iv, err := strconv.ParseInt(val, 10, 64)
-				if err != nil {
-					return err
-				}
-				f.SetInt(iv)
-			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-				uv, err := strconv.ParseUint(val, 10, 64)
-				if err != nil {
-					return err
-				}
-				f.SetUint(uv)
-			case reflect.Struct:
-				switch f.Type() {
-				case timeType:
-					if len(val) == 25 {
-						mins, err := strconv.Atoi(val[22:])
-						if err != nil {
-							return err
-						}
-						val = val[:22] + fmt.Sprintf("%02d%02d", mins/60, mins%60)
-					}
-					t, err := time.Parse("20060102150405.000000-0700", val)
-					if err != nil {
-						return err
-					}
-					f.Set(reflect.ValueOf(t))
-				}
-			}
-		case bool:
-			switch f.Kind() {
-			case reflect.Bool:
-				f.SetBool(val)
-			default:
-				return &ErrFieldMismatch{
-					StructType: of.Type(),
-					FieldName:  n,
-					Reason:     "not a bool",
-				}
-			}
-		case float32:
-			switch f.Kind() {
-			case reflect.Float32:
-				f.SetFloat(float64(val))
-			default:
-				return &ErrFieldMismatch{
-					StructType: of.Type(),
-					FieldName:  n,
-					Reason:     "not a Float32",
-				}
-			}
-		default:
-			if f.Kind() == reflect.Slice {
-				switch f.Type().Elem().Kind() {
-				case reflect.String:
-					safeArray := prop.ToArray()
-					if safeArray != nil {
-						arr := safeArray.ToValueArray()
-						fArr := reflect.MakeSlice(f.Type(), len(arr), len(arr))
-						for i, v := range arr {
-							s := fArr.Index(i)
-							s.SetString(v.(string))
-						}
-						f.Set(fArr)
-					}
-				case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint:
-					safeArray := prop.ToArray()
-					if safeArray != nil {
-						arr := safeArray.ToValueArray()
-						fArr := reflect.MakeSlice(f.Type(), len(arr), len(arr))
-						for i, v := range arr {
-							s := fArr.Index(i)
-							s.SetUint(reflect.ValueOf(v).Uint())
-						}
-						f.Set(fArr)
-					}
-				case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int:
-					safeArray := prop.ToArray()
-					if safeArray != nil {
-						arr := safeArray.ToValueArray()
-						fArr := reflect.MakeSlice(f.Type(), len(arr), len(arr))
-						for i, v := range arr {
-							s := fArr.Index(i)
-							s.SetInt(reflect.ValueOf(v).Int())
-						}
-						f.Set(fArr)
-					}
-				default:
-					return &ErrFieldMismatch{
-						StructType: of.Type(),
-						FieldName:  n,
-						Reason:     fmt.Sprintf("unsupported slice type (%T)", val),
-					}
-				}
-			} else {
-				typeof := reflect.TypeOf(val)
-				if typeof == nil && (isPtr || c.NonePtrZero) {
-					if (isPtr && c.PtrNil) || (!isPtr && c.NonePtrZero) {
-						of.Set(reflect.Zero(of.Type()))
-					}
-					break
-				}
-				return &ErrFieldMismatch{
-					StructType: of.Type(),
-					FieldName:  n,
-					Reason:     fmt.Sprintf("unsupported type (%T)", val),
-				}
-			}
-		}
-	}
-	return errFieldMismatch
-}
+// 		switch val := prop.Value().(type) {
+// 		case int8, int16, int32, int64, int:
+// 			v := reflect.ValueOf(val).Int()
+// 			switch f.Kind() {
+// 			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+// 				f.SetInt(v)
+// 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+// 				f.SetUint(uint64(v))
+// 			default:
+// 				return &ErrFieldMismatch{
+// 					StructType: of.Type(),
+// 					FieldName:  n,
+// 					Reason:     "not an integer class",
+// 				}
+// 			}
+// 		case uint8, uint16, uint32, uint64:
+// 			v := reflect.ValueOf(val).Uint()
+// 			switch f.Kind() {
+// 			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+// 				f.SetInt(int64(v))
+// 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+// 				f.SetUint(v)
+// 			default:
+// 				return &ErrFieldMismatch{
+// 					StructType: of.Type(),
+// 					FieldName:  n,
+// 					Reason:     "not an integer class",
+// 				}
+// 			}
+// 		case string:
+// 			switch f.Kind() {
+// 			case reflect.String:
+// 				f.SetString(val)
+// 			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+// 				iv, err := strconv.ParseInt(val, 10, 64)
+// 				if err != nil {
+// 					return err
+// 				}
+// 				f.SetInt(iv)
+// 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+// 				uv, err := strconv.ParseUint(val, 10, 64)
+// 				if err != nil {
+// 					return err
+// 				}
+// 				f.SetUint(uv)
+// 			case reflect.Struct:
+// 				switch f.Type() {
+// 				case timeType:
+// 					if len(val) == 25 {
+// 						mins, err := strconv.Atoi(val[22:])
+// 						if err != nil {
+// 							return err
+// 						}
+// 						val = val[:22] + fmt.Sprintf("%02d%02d", mins/60, mins%60)
+// 					}
+// 					t, err := time.Parse("20060102150405.000000-0700", val)
+// 					if err != nil {
+// 						return err
+// 					}
+// 					f.Set(reflect.ValueOf(t))
+// 				}
+// 			}
+// 		case bool:
+// 			switch f.Kind() {
+// 			case reflect.Bool:
+// 				f.SetBool(val)
+// 			default:
+// 				return &ErrFieldMismatch{
+// 					StructType: of.Type(),
+// 					FieldName:  n,
+// 					Reason:     "not a bool",
+// 				}
+// 			}
+// 		case float32:
+// 			switch f.Kind() {
+// 			case reflect.Float32:
+// 				f.SetFloat(float64(val))
+// 			default:
+// 				return &ErrFieldMismatch{
+// 					StructType: of.Type(),
+// 					FieldName:  n,
+// 					Reason:     "not a Float32",
+// 				}
+// 			}
+// 		case float64:
+// 			switch f.Kind() {
+// 			case reflect.Float32, reflect.Float64:
+// 				f.SetFloat(val)
+// 			default:
+// 				return &ErrFieldMismatch{
+// 					StructType: of.Type(),
+// 					FieldName:  n,
+// 					Reason:     "not a Float64",
+// 				}
+// 			}
+// 		default:
+// 			if f.Kind() == reflect.Slice {
+// 				switch f.Type().Elem().Kind() {
+// 				case reflect.String:
+// 					safeArray := prop.ToArray()
+// 					if safeArray != nil {
+// 						arr := safeArray.ToValueArray()
+// 						fArr := reflect.MakeSlice(f.Type(), len(arr), len(arr))
+// 						for i, v := range arr {
+// 							s := fArr.Index(i)
+// 							s.SetString(v.(string))
+// 						}
+// 						f.Set(fArr)
+// 					}
+// 				case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint:
+// 					safeArray := prop.ToArray()
+// 					if safeArray != nil {
+// 						arr := safeArray.ToValueArray()
+// 						fArr := reflect.MakeSlice(f.Type(), len(arr), len(arr))
+// 						for i, v := range arr {
+// 							s := fArr.Index(i)
+// 							s.SetUint(reflect.ValueOf(v).Uint())
+// 						}
+// 						f.Set(fArr)
+// 					}
+// 				case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int:
+// 					safeArray := prop.ToArray()
+// 					if safeArray != nil {
+// 						arr := safeArray.ToValueArray()
+// 						fArr := reflect.MakeSlice(f.Type(), len(arr), len(arr))
+// 						for i, v := range arr {
+// 							s := fArr.Index(i)
+// 							s.SetInt(reflect.ValueOf(v).Int())
+// 						}
+// 						f.Set(fArr)
+// 					}
+// 				default:
+// 					return &ErrFieldMismatch{
+// 						StructType: of.Type(),
+// 						FieldName:  n,
+// 						Reason:     fmt.Sprintf("unsupported slice type (%T)", val),
+// 					}
+// 				}
+// 			} else {
+// 				typeof := reflect.TypeOf(val)
+// 				if typeof == nil && (isPtr || c.NonePtrZero) {
+// 					if (isPtr && c.PtrNil) || (!isPtr && c.NonePtrZero) {
+// 						of.Set(reflect.Zero(of.Type()))
+// 					}
+// 					break
+// 				}
+// 				return &ErrFieldMismatch{
+// 					StructType: of.Type(),
+// 					FieldName:  n,
+// 					Reason:     fmt.Sprintf("unsupported type (%T)", val),
+// 				}
+// 			}
+// 		}
+// 	}
+// 	return errFieldMismatch
+// }
 
 type multiArgType int
 

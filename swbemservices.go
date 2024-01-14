@@ -5,7 +5,6 @@ package wmi
 
 import (
 	"fmt"
-	"reflect"
 	"runtime"
 	"sync"
 
@@ -26,7 +25,7 @@ type SWbemServices struct {
 
 type queryRequest struct {
 	query    string
-	dst      interface{}
+	dst      SliceValuer
 	args     []interface{}
 	finished chan error
 }
@@ -129,6 +128,10 @@ func (s *SWbemServices) process(initError chan error) {
 	close(s.closeError)
 }
 
+func (s *SWbemServices) MustSliceValuer(dst interface{}) SliceValuer {
+	return s.cWMIClient.MustSliceValuer(dst)
+}
+
 // Query runs the WQL query using a SWbemServices instance and appends the values to dst.
 //
 // dst must have type *[]S or *[]*S, for some struct type S. Fields selected in
@@ -139,7 +142,7 @@ func (s *SWbemServices) process(initError chan error) {
 // By default, the local machine and default namespace are used. These can be
 // changed using connectServerArgs. See
 // http://msdn.microsoft.com/en-us/library/aa393720.aspx for details.
-func (s *SWbemServices) Query(query string, dst interface{}, connectServerArgs ...interface{}) error {
+func (s *SWbemServices) Query(query string, dst SliceValuer, connectServerArgs ...interface{}) error {
 	s.lQueryorClose.Lock()
 	if s == nil || s.sWbemLocatorIDispatch == nil {
 		s.lQueryorClose.Unlock()
@@ -175,15 +178,15 @@ func (s *SWbemServices) queryBackground(q *queryRequest) error {
 	wmi := s.sWbemLocatorIDispatch //Should just rename in the code, but this will help as we break things apart
 	//fmt.Println("queryBackground: Starting")
 
-	dv := reflect.ValueOf(q.dst)
-	if dv.Kind() != reflect.Ptr || dv.IsNil() {
-		return ErrInvalidEntityType
-	}
-	dv = dv.Elem()
-	mat, elemType := checkMultiArg(dv)
-	if mat == multiArgTypeInvalid {
-		return ErrInvalidEntityType
-	}
+	// dv := reflect.ValueOf(q.dst)
+	// if dv.Kind() != reflect.Ptr || dv.IsNil() {
+	// 	return ErrInvalidEntityType
+	// }
+	// dv = dv.Elem()
+	// mat, elemType := checkMultiArg(dv)
+	// if mat == multiArgTypeInvalid {
+	// 	return ErrInvalidEntityType
+	// }
 
 	// service is a SWbemServices
 	serviceRaw, err := oleutil.CallMethod(wmi, "ConnectServer", q.args...)
@@ -222,7 +225,8 @@ func (s *SWbemServices) queryBackground(q *queryRequest) error {
 	defer enum.Release()
 
 	// Initialize a slice with Count capacity
-	dv.Set(reflect.MakeSlice(dv.Type(), 0, int(count)))
+	// dv.Set(reflect.MakeSlice(dv.Type(), 0, int(count)))
+	q.dst.Grow(int(count))
 
 	var errFieldMismatch error
 	for itemRaw, length, err := enum.Next(1); length > 0; itemRaw, length, err = enum.Next(1) {
@@ -235,8 +239,9 @@ func (s *SWbemServices) queryBackground(q *queryRequest) error {
 			item := itemRaw.ToIDispatch()
 			defer item.Release()
 
-			ev := reflect.New(elemType)
-			if err = s.cWMIClient.loadEntity(ev.Interface(), item); err != nil {
+			// ev := reflect.New(elemType)
+			// if err = s.cWMIClient.loadEntity(ev.Interface(), item); err != nil {
+			if err = q.dst.LoadEntity(item); err != nil {
 				if _, ok := err.(*ErrFieldMismatch); ok {
 					// We continue loading entities even in the face of field mismatch errors.
 					// If we encounter any other error, that other error is returned. Otherwise,
@@ -246,10 +251,10 @@ func (s *SWbemServices) queryBackground(q *queryRequest) error {
 					return err
 				}
 			}
-			if mat != multiArgTypeStructPtr {
-				ev = ev.Elem()
-			}
-			dv.Set(reflect.Append(dv, ev))
+			// if mat != multiArgTypeStructPtr {
+			// 	ev = ev.Elem()
+			// }
+			// dv.Set(reflect.Append(dv, ev))
 			return nil
 		}()
 		if err != nil {
